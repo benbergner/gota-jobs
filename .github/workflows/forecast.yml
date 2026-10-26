@@ -1,0 +1,29 @@
+# The global forecast: the latest ECMWF IFS run (0.1°) to R2, twice a day once each run is out
+# (some 9½ hours after 00 and 12 UTC). A run that is on R2 already is skipped.
+name: forecast
+on:
+  schedule:
+    - cron: '15 10 * * *'
+    - cron: '15 22 * * *'
+    # a second try each, if the first found the run not yet complete
+    - cron: '15 12 * * *'
+    - cron: '15 0 * * *'
+  workflow_dispatch:
+concurrency: forecast
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python forecast.py --out out --upload
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || 'world-data' }}
