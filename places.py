@@ -30,9 +30,11 @@ import zipfile
 
 GEONAMES = 'https://download.geonames.org/export/dump'
 # every populated place here, villages and town districts too; elsewhere those of 500 people or more
-FULL_COUNTRIES = ['DE', 'AT', 'CH']
+FULL_COUNTRIES = ['DE', 'AT', 'CH', 'LI']
 # the language of each full country's local names (the German pages show them)
-LOCAL_LANG = {'DE': 'de', 'AT': 'de', 'CH': 'de'}
+LOCAL_LANG = {'DE': 'de', 'AT': 'de', 'CH': 'de', 'LI': 'de'}
+# German-speaking regions elsewhere (GeoNames admin2): their villages keep their German names too
+GERMAN_REGIONS = {'IT.17.BZ'}  # South Tyrol
 # populated places, but not historical, abandoned, destroyed or religious ones
 KINDS = {'PPL', 'PPLA', 'PPLA2', 'PPLA3', 'PPLA4', 'PPLA5', 'PPLC', 'PPLG', 'PPLL', 'PPLS', 'PPLF', 'PPLX'}
 # the more important first where names are equal in population
@@ -178,9 +180,14 @@ def main():
         full = r[7] != 'PPLX' and parent.startswith(name_local + ' ')
         if full:
             name_local = parent
-        de = german.get(gid) if cc not in FULL_COUNTRIES else None
-        a1_de = (german_short.get(a1[1]) if a1 else None) if cc not in FULL_COUNTRIES else None
         pop = int(r[14] or 0)
+        # a German name abroad where German speakers use one: for towns of some size, and everywhere in
+        # German-speaking regions; not the old names of villages elsewhere ("Espenkrug" for Osowa, even
+        # where GeoNames marks them preferred), nor additions in brackets or names of districts
+        german_ok = pop >= INDEX_MIN_POP or f'{cc}.{r[10]}.{r[11]}' in GERMAN_REGIONS
+        de = re.sub(r'\s*\(.*\)$', '', german.get(gid, '')) if cc not in FULL_COUNTRIES and german_ok else ''
+        de = '' if '/' in de or re.match(r'(Bezirk|Kreis|Landkreis|Distrikt|Provinz|Gemeinde) ', de) else de
+        a1_de = (german_short.get(a1[1]) if a1 else None) if cc not in FULL_COUNTRIES else None
         index = [lang for lang, yes in (('de', cc in INDEX_DE_COUNTRIES or pop >= INDEX_MIN_POP), ('en', pop >= INDEX_MIN_POP)) if yes]
         places.append(
             {

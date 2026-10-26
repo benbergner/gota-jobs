@@ -52,7 +52,7 @@ each `fields` bytes. 255 is missing in every field.
 
 ## Places: `places/`
 
-From GeoNames (CC BY 4.0): every populated place in DE, AT and CH, elsewhere those of 500 people or
+From GeoNames (CC BY 4.0): every populated place in DE, AT, CH and LI, elsewhere those of 500 people or
 more.
 
 - `slugs.tsv`: `geonameid<TAB>slug` of every place ever given a slug. A slug, once given, is kept.
