@@ -56,13 +56,15 @@ From GeoNames (CC BY 4.0): every populated place in DE, AT and CH, elsewhere tho
 more.
 
 - `slugs.tsv`: `geonameid<TAB>slug` of every place ever given a slug. A slug, once given, is kept.
-- `meta.json`: `{ places, sitemaps, listed, split }`; `split` lists the slug prefixes whose places are
-  sharded by a letter more.
+- `meta.json`: `{ places, sitemaps, listed, split }`; `sitemaps` and `listed` per language
+  (`{ de, en }`: files, pages); `split` lists the slug prefixes whose places are sharded by a letter more.
 - `by-slug/<prefix>.json`: `{ slug: place }` for the slugs starting with `<prefix>`: their first three
-  letters, or more while the prefix is in `split`. A place: `id` (GeoNames), `n` (local name), `en`
-  (English name if different), `lat`, `lon`, `cc` (country), `a1` (state) and `a1en`, `a2` (district),
-  `p` (the municipality, for districts and villages), `pop`, `f` (GeoNames feature code), `tz`, `ele`
-  (m). Absent keys are empty.
+  letters, or more while the prefix is in `split`. A place: `id` (GeoNames), `n` (local name), `en` and
+  `de` (English and German names if different), `lat`, `lon`, `cc` (country), `a1` (state) with `a1en`
+  and `a1de`, `a2` (district), `p` (the municipality, for districts and villages), `pop`, `f` (GeoNames
+  feature code), `tz`, `ele` (m), `x` (the languages whose page search engines should index, e.g.
+  `"de en"`; absent: none). Absent keys are empty.
 - `search/<abc>.json`: `[name, slug, region, country, population]` for each word of each place's names
   starting with `abc` (normalised: lower case, umlauts spelled out, no accents), most populous first.
-- `sitemap/<n>.txt`: the slugs listed in sitemap `n`, one a line.
+- `sitemap/<lang>-<n>.txt`: the pages of language `lang` (`de`, `en`) for sitemap `n`, 10,000 a file, a
+  line each: the slug, a tab, the place's `x`.

@@ -8,7 +8,7 @@ the previous build's, the new places get new ones). Writes, under places/ (FORMA
   by-slug/<abc>.json     the places by the first three letters of their slug, four or more where that
                          would be too many (meta.json lists those prefixes); the place pages look them up
   search/<abc>.json      names by their words' first three letters, most populous first (the place search)
-  sitemap/<n>.txt        the place pages' slugs for the sitemaps, 5,000 places (10,000 URLs) a file
+  sitemap/<lang>-<n>.txt the pages to list in the sitemaps, by language, 10,000 a file
 
   python places.py --out out                    # downloads GeoNames into cache/, keeps out/places/slugs.tsv
   python places.py --out out --slugs prev.tsv   # with the slugs of the build before
@@ -22,7 +22,9 @@ import io
 import json
 import os
 import re
+import time
 import unicodedata
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -37,10 +39,12 @@ KINDS = {'PPL', 'PPLA', 'PPLA2', 'PPLA3', 'PPLA4', 'PPLA5', 'PPLC', 'PPLG', 'PPL
 RANK = {'PPLC': 0, 'PPLA': 1, 'PPLG': 1, 'PPLA2': 2, 'PPLA3': 3, 'PPLA4': 4, 'PPLA5': 5, 'PPL': 6, 'PPLS': 7, 'PPLL': 7, 'PPLF': 7, 'PPLX': 8}
 # paths the site uses itself
 RESERVED = {'api', 'data', 'assets', 'materials', 'sitemaps', 'weather', 'wetter', 'place', 'index', 'robots', 'favicon'}
-# the sitemaps: all places of these countries, elsewhere towns of this many people
-SITEMAP_COUNTRIES = set(FULL_COUNTRIES)
-SITEMAP_MIN_POP = 50000
-SITEMAP_PLACES = 5000
+# Which pages search engines are asked to index (the record's `x`, the sitemaps): the German pages of
+# every place in these countries, elsewhere (and the English pages) of towns of this many people.
+# A new site gets few pages indexed; it should ask for those people search for first.
+INDEX_DE_COUNTRIES = set(FULL_COUNTRIES)
+INDEX_MIN_POP = 50000
+SITEMAP_URLS = 10000
 # places per by-slug shard at most (where a longer prefix can split it)
 SHARD_MAX = 800
 
@@ -53,12 +57,50 @@ def download(name: str, cache: str) -> bytes:
     path = os.path.join(cache, name.replace('/', '_'))
     if not os.path.exists(path):
         log('downloading', name)
-        req = urllib.request.Request(f'{GEONAMES}/{name}', headers={'User-Agent': 'gota-places-job'})
-        with urllib.request.urlopen(req, timeout=300) as res, open(path + '.part', 'wb') as fh:
-            fh.write(res.read())
+        part = path + '.part'
+        if os.path.exists(part):
+            os.remove(part)
+        # the server resets long downloads now and then: carry on where it stopped
+        for attempt in range(10):
+            done = os.path.getsize(part) if os.path.exists(part) else 0
+            req = urllib.request.Request(f'{GEONAMES}/{name}', headers={'User-Agent': 'gota-places-job', **({'Range': f'bytes={done}-'} if done else {})})
+            try:
+                with urllib.request.urlopen(req, timeout=300) as res, open(part, 'ab' if res.status == 206 else 'wb') as fh:
+                    while chunk := res.read(1 << 20):
+                        fh.write(chunk)
+                break
+            except (OSError, urllib.error.URLError) as e:
+                if attempt == 9:
+                    raise
+                log('download stopped, resuming:', e)
+                time.sleep(5 * (attempt + 1))
         os.replace(path + '.part', path)
     with open(path, 'rb') as fh:
         return fh.read()
+
+
+def zipped_lines(path: str, member: str):
+    """A large zipped file's rows, read as a stream."""
+    with zipfile.ZipFile(path) as z, z.open(member) as fh:
+        for line in io.TextIOWrapper(fh, encoding='utf-8'):
+            if line and not line.startswith('#'):
+                yield line.rstrip('\n').split('\t')
+
+
+def best_names(rows, lang: str, ids: set[str] | None = None) -> tuple[dict[str, str], dict[str, str]]:
+    """From alternate-name rows: per GeoNames id the best name in `lang` (preferred, not a short name,
+    short) and the shortest (for regions: "Bayern", not "Freistaat Bayern"); colloquial and historic
+    names left out."""
+    best, shortest = {}, {}
+    for r in rows:
+        if len(r) < 8 or r[2] != lang or r[6] == '1' or r[7] == '1' or (ids is not None and r[1] not in ids):
+            continue
+        score = (r[4] == '1', r[5] != '1', -len(r[3]))
+        if r[1] not in best or score > best[r[1]][0]:
+            best[r[1]] = (score, r[3])
+        if r[1] not in shortest or len(r[3]) < len(shortest[r[1]]):
+            shortest[r[1]] = r[3]
+    return {k: v[1] for k, v in best.items()}, shortest
 
 
 def lines(data: bytes, member: str | None = None):
@@ -110,19 +152,16 @@ def main():
                 rows[r[0]] = r
             elif r[7] == 'ADM4':
                 gemeinden[(r[8], r[10], r[11], r[12], r[13])] = r[1]
-        # names in the country's language: preferred ones first (of regions the shortest: "Bayern", not "Freistaat Bayern")
-        lang = LOCAL_LANG[cc]
-        best = {}
-        for r in lines(download(f'alternatenames/{cc}.zip', a.cache), f'{cc}.txt'):
-            if len(r) < 8 or r[2] != lang or r[6] == '1' or r[7] == '1':  # colloquial, historic
-                continue
-            score = (r[4] == '1', r[5] != '1', -len(r[3]))  # preferred, not a short name, short
-            if r[1] not in best or score > best[r[1]][0]:
-                best[r[1]] = (score, r[3])
-            if r[1] not in shortest or len(r[3]) < len(shortest[r[1]]):
-                shortest[r[1]] = r[3]
-        local.update({k: v[1] for k, v in best.items()})
+        # names in the country's language
+        best, short = best_names(lines(download(f'alternatenames/{cc}.zip', a.cache), f'{cc}.txt'), LOCAL_LANG[cc])
+        local.update(best)
+        shortest.update(short)
     log('places', len(rows))
+    # German names of the places and states elsewhere, for the German pages ("Mailand", "Lombardei")
+    abroad = {gid for gid, r in rows.items() if r[8] not in FULL_COUNTRIES} | {v[1] for k, v in admin1.items() if k[:2] not in FULL_COUNTRIES}
+    download('alternateNamesV2.zip', a.cache)
+    german, german_short = best_names(zipped_lines(os.path.join(a.cache, 'alternateNamesV2.zip'), 'alternateNamesV2.txt'), 'de', abroad)
+    log('german names abroad', len(german))
 
     def region(entry):
         """A region's name: the shortest in the local language ("Berlin", not "Land Berlin"), else GeoNames'."""
@@ -139,11 +178,16 @@ def main():
         full = r[7] != 'PPLX' and parent.startswith(name_local + ' ')
         if full:
             name_local = parent
+        de = german.get(gid) if cc not in FULL_COUNTRIES else None
+        a1_de = (german_short.get(a1[1]) if a1 else None) if cc not in FULL_COUNTRIES else None
+        pop = int(r[14] or 0)
+        index = [lang for lang, yes in (('de', cc in INDEX_DE_COUNTRIES or pop >= INDEX_MIN_POP), ('en', pop >= INDEX_MIN_POP)) if yes]
         places.append(
             {
                 'id': int(gid),
                 'n': name_local,
                 'en': r[1] if r[1] != name_local and not full else None,
+                'de': de if de and de != name_local else None,
                 'ascii': r[2] or r[1],
                 'lat': round(float(r[4]), 5),
                 'lon': round(float(r[5]), 5),
@@ -151,12 +195,15 @@ def main():
                 'a1': region(a1),
                 # an English name where it is one ("Bavaria"), not a description ("State of Berlin")
                 'a1en': a1[0] if a1 and region(a1) not in a1[0] else None,
+                'a1de': a1_de if a1_de and a1_de != region(a1) else None,
                 'a2': region(admin2.get(f'{cc}.{r[10]}.{r[11]}')),
                 'p': parent if parent and parent != name_local else None,
-                'pop': int(r[14] or 0),
+                'pop': pop,
                 'f': r[7],
                 'tz': r[17],
                 'ele': int(r[15] or r[16] or 0) if (r[15] or r[16]) not in ('', '-9999') else None,
+                # the languages whose page search engines should index
+                'x': ' '.join(index) or None,
             }
         )
 
@@ -208,16 +255,21 @@ def main():
     for p in places:  # most populous first
         # a district or village by its municipality, a town by its state
         region = (p['p'] if p['f'] == 'PPLX' or not p['a1'] else p['a1']) or ''
-        for name in {p['n'], p['en'] or p['n']}:
+        for name in {p['n'], p['en'] or p['n'], p['de'] or p['n']}:
             for key in {w[:3] for w in words(name) if len(w) >= 2}:
                 search[key].append([name, p['slug'], region, p['cc'], p['pop']])
     write_dir(os.path.join(out, 'search'), {k: json.dumps(v, ensure_ascii=False, separators=(',', ':')) for k, v in search.items()})
 
-    # sitemaps
-    listed = [p['slug'] for p in places if p['cc'] in SITEMAP_COUNTRIES or p['pop'] >= SITEMAP_MIN_POP]
-    chunks = {str(i // SITEMAP_PLACES): '\n'.join(listed[i : i + SITEMAP_PLACES]) for i in range(0, len(listed), SITEMAP_PLACES)}
+    # sitemaps: per language the pages to index, each line the slug and the languages it is indexed in
+    chunks, sitemaps, listed = {}, {}, {}
+    for lang in ('de', 'en'):
+        rows_ = [f"{p['slug']}\t{p['x']}" for p in places if lang in (p['x'] or '').split()]
+        listed[lang] = len(rows_)
+        sitemaps[lang] = (len(rows_) + SITEMAP_URLS - 1) // SITEMAP_URLS
+        for i in range(0, len(rows_), SITEMAP_URLS):
+            chunks[f'{lang}-{i // SITEMAP_URLS}'] = '\n'.join(rows_[i : i + SITEMAP_URLS])
     write_dir(os.path.join(out, 'sitemap'), chunks, '.txt')
-    meta = {'places': len(places), 'sitemaps': len(chunks), 'listed': len(listed), 'split': sorted(split)}
+    meta = {'places': len(places), 'sitemaps': sitemaps, 'listed': listed, 'split': sorted(split)}
     with open(os.path.join(out, 'meta.json'), 'w') as fh:
         json.dump(meta, fh)
     log(meta, 'shards', len(shards), 'search keys', len(search))
