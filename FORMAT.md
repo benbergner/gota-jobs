@@ -6,8 +6,9 @@ What the jobs here write and the site's Pages Functions read (`functions/_foreca
 ## Forecast: `weather/forecast/global/`
 
 `latest.json`: the newest complete run, `{ path: "weather/forecast/global/2026102500/", ...meta }`
-(cached 5 minutes). Each run's files lie under its own path and never change; the job keeps the
-newest two runs and deletes the older ones.
+(cached 5 minutes). Each run's files lie under its own path and never change; after a new run the
+job keeps the one before for a while (the site may still read it), and the next job (some two hours
+later) deletes it: one run, two for those hours.
 
 `<run>/meta.json`:
 

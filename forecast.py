@@ -2,8 +2,8 @@
 """
 The global forecast (PLACES.md): the latest ECMWF IFS run at 0.1° from ECMWF's open data, as one
 point-major file, each land cell's 10 days in one record, so one byte-range read returns a place's
-forecast. Written to R2 under weather/forecast/global/<run>/ with latest.json pointing at it; older
-runs are deleted. The layout is in FORMAT.md.
+forecast. Written to R2 under weather/forecast/global/<run>/ with latest.json pointing at it; the
+run before is deleted by the next job (the retry some two hours later). The layout is in FORMAT.md.
 
   python forecast.py --out out                 # the latest run, into out/
   python forecast.py --out out --upload        # ... and to R2 (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET)
@@ -31,7 +31,6 @@ PARAMS = ['2t', '2d', 'tp', 'sf', 'tcc', '10u', '10v', '10fg', 'msl', 'mucape']
 # the record's fields per step, in this order (FORMAT.md has their encodings)
 FIELDS = ['temp', 'precip', 'snow', 'cloud', 'wind', 'windDir', 'gust', 'humidity', 'pressure', 'cape']
 MISSING = 255
-KEEP_RUNS = 2
 PREFIX = 'weather/forecast/global'
 
 
@@ -255,9 +254,18 @@ def upload(out_dir: str, run: dt.datetime, meta: dict):
     latest = {'path': key, **meta}
     s3.put_object(Bucket=bucket, Key=f'{PREFIX}/latest.json', Body=json.dumps(latest).encode(), ContentType='application/json', CacheControl='public, max-age=300')
     log('latest ->', key)
-    # older runs: all but the newest KEEP_RUNS
+    # the run before stays a while: the site reads latest.json once a minute, and may still read it
+    prune(keep=2)
+
+
+def prune(keep: int):
+    """Deletes all runs but the one latest.json points at and, with keep=2, the newest other (the run
+    before, which the site may still read for a minute). The next job, finding nothing new, leaves one."""
+    s3, bucket = r2()
+    current = json.loads(s3.get_object(Bucket=bucket, Key=f'{PREFIX}/latest.json')['Body'].read())['path']
     runs = sorted(p['Prefix'] for p in s3.list_objects_v2(Bucket=bucket, Prefix=f'{PREFIX}/', Delimiter='/').get('CommonPrefixes', []))
-    for old in runs[:-KEEP_RUNS]:
+    others = [r for r in runs if r != current]
+    for old in others[: len(others) - (keep - 1)] if keep > 1 else others:
         objs = s3.list_objects_v2(Bucket=bucket, Prefix=old).get('Contents', [])
         if objs:
             s3.delete_objects(Bucket=bucket, Delete={'Objects': [{'Key': o['Key']} for o in objs]})
@@ -284,6 +292,7 @@ def main():
     run = dt.datetime.strptime(a.run, '%Y%m%d%H').replace(tzinfo=dt.timezone.utc) if a.run else latest_run(dt.datetime.now(dt.timezone.utc))
     if a.upload and not a.run and published_run() == run.strftime('%Y-%m-%dT%H:%M:%SZ'):
         log('run', f'{run:%Y-%m-%d %H} UTC is published already')
+        prune(keep=1)
         return
     steps = [s for s in STEPS if s <= a.max_step]
     meta = build(run, a.out, steps, [float(x) for x in a.bbox.split(',')] if a.bbox else None)
